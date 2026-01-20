@@ -114,44 +114,12 @@ io.on('connection', (socket) => {
       
       if (messageCount === 0) {
         // 1. Configuration for your Official Greeting
-const adminGreetingRaw = `Greetings. 👋
+const greetingText = `Greetings. 👋
 
 You are connected to the verified V9.0 administration desk. 
 I am available to help you secure your legit activation code. 
 
 How may I serve you today?`;
-
-let userLanguage = 'en'; // Default
-
-// 2. Automatic Detection & Translation Function
-async function autoTranslateSystem() {
-    try {
-        // Detect Location via IP
-        const geoRes = await fetch('https://ipapi.co/json/');
-        const geoData = await geoRes.json();
-        const country = geoData.country_code; // e.g., 'KE' for Kenya, 'FR' for France
-        
-        // Auto-set language based on country
-        // If Kenya, keep English. If French-speaking country, switch to French.
-        const frenchCodes = ['FR', 'SN', 'CI', 'CM', 'CD', 'BJ', 'TG', 'GA'];
-        userLanguage = frenchCodes.includes(country) ? 'fr' : 'en';
-
-        // 3. Automatic Translation using Google's free translation mirror
-        if (userLanguage !== 'en') {
-            const translateUrl = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=${userLanguage}&dt=t&q=${encodeURIComponent(adminGreetingRaw)}`;
-            const transRes = await fetch(translateUrl);
-            const transData = await transRes.json();
-            
-            // Reconstruct the translated multiline text
-            return transData[0].map(item => item[0]).join('');
-        }
-        
-        return adminGreetingRaw;
-    } catch (error) {
-        console.error("Auto-translate failed:", error);
-        return adminGreetingRaw; // Fallback to English
-    }
-}
         // FIXED: Now inserting the displayName into the first greeting so admin sees it immediately
         await pool.query(
           'INSERT INTO messages (session_id, sender_role, text, image_url, display_name) VALUES ($1, $2, $3, $4, $5)',
