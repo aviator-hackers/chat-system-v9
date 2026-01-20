@@ -24,7 +24,7 @@ const pool = new Pool({
 app.use(cors());
 app.use(express.json());
 
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
 // Test database connection
 pool.query('SELECT NOW()', (err, res) => {
