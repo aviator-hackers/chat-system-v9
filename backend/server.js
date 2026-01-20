@@ -45,18 +45,17 @@ app.post('/api/admin/verify', (req, res) => {
   }
 });
 
-// 2. Get all sessions (Updated to include display_name)
+// 2. Get all sessions (Updated to correctly fetch display_name)
 app.get('/api/admin/sessions', async (req, res) => {
   try {
-    // This query gets the unique sessions and the latest name/timestamp for each
+    // This query ensures we get the most recent display_name associated with a session_id
     const result = await pool.query(
       `SELECT DISTINCT ON (session_id) 
         session_id, 
         display_name, 
-        MAX(created_at) as last_message 
+        MAX(created_at) OVER (PARTITION BY session_id) as last_message 
        FROM messages 
-       GROUP BY session_id, display_name 
-       ORDER BY session_id, last_message DESC`
+       ORDER BY session_id, created_at DESC`
     );
     res.json({ sessions: result.rows });
   } catch (err) {
@@ -65,7 +64,7 @@ app.get('/api/admin/sessions', async (req, res) => {
   }
 });
 
-// 3. Delete a session (NEW)
+// 3. Delete a session
 app.delete('/api/admin/sessions/:sessionId', async (req, res) => {
   const { sessionId } = req.params;
   try {
@@ -96,7 +95,12 @@ app.get('/api/messages/:sessionId', async (req, res) => {
 io.on('connection', (socket) => {
   console.log('New client connected:', socket.id);
 
-  socket.on('join', async (sessionId) => {
+  // User joins with their session ID and Display Name
+  socket.on('join', async (data) => {
+    // Check if data is an object (new version) or string (old version)
+    const sessionId = typeof data === 'object' ? data.sessionId : data;
+    const displayName = typeof data === 'object' ? data.displayName : null;
+
     socket.join(sessionId);
     socket.sessionId = sessionId;
     
@@ -110,15 +114,17 @@ io.on('connection', (socket) => {
       
       if (messageCount === 0) {
         const greetingText = 'Hello, how can I help you?';
+        // FIXED: Now inserting the displayName into the first greeting so admin sees it immediately
         await pool.query(
-          'INSERT INTO messages (session_id, sender_role, text, image_url) VALUES ($1, $2, $3, $4)',
-          [sessionId, 'admin', greetingText, null]
+          'INSERT INTO messages (session_id, sender_role, text, image_url, display_name) VALUES ($1, $2, $3, $4, $5)',
+          [sessionId, 'admin', greetingText, null, displayName]
         );
         
         socket.emit('message', {
           sender_role: 'admin',
           text: greetingText,
           image_url: null,
+          display_name: displayName,
           created_at: new Date().toISOString()
         });
       }
@@ -140,7 +146,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Handle new messages (Updated to include display_name and reply_to_text)
+  // Handle new messages
   socket.on('send-message', async (data) => {
     const { sessionId, text, senderRole, imageData, displayName, replyToText } = data;
     
