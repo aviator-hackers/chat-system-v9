@@ -35,7 +35,7 @@ pool.query('SELECT NOW()', (err, res) => {
   }
 });
 
-// REST endpoint to verify admin password (STILL HERE)
+// 1. Verify admin password
 app.post('/api/admin/verify', (req, res) => {
   const { password } = req.body;
   if (password === ADMIN_PASSWORD) {
@@ -45,11 +45,18 @@ app.post('/api/admin/verify', (req, res) => {
   }
 });
 
-// Get all session IDs (STILL HERE)
+// 2. Get all sessions (Updated to include display_name)
 app.get('/api/admin/sessions', async (req, res) => {
   try {
+    // This query gets the unique sessions and the latest name/timestamp for each
     const result = await pool.query(
-      'SELECT DISTINCT session_id, MAX(created_at) as last_message FROM messages GROUP BY session_id ORDER BY last_message DESC'
+      `SELECT DISTINCT ON (session_id) 
+        session_id, 
+        display_name, 
+        MAX(created_at) as last_message 
+       FROM messages 
+       GROUP BY session_id, display_name 
+       ORDER BY session_id, last_message DESC`
     );
     res.json({ sessions: result.rows });
   } catch (err) {
@@ -58,7 +65,19 @@ app.get('/api/admin/sessions', async (req, res) => {
   }
 });
 
-// Get messages for a specific session (STILL HERE)
+// 3. Delete a session (NEW)
+app.delete('/api/admin/sessions/:sessionId', async (req, res) => {
+  const { sessionId } = req.params;
+  try {
+    await pool.query('DELETE FROM messages WHERE session_id = $1', [sessionId]);
+    res.json({ success: true, message: 'Session deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting session:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// 4. Get messages for a specific session
 app.get('/api/messages/:sessionId', async (req, res) => {
   const { sessionId } = req.params;
   try {
@@ -77,12 +96,10 @@ app.get('/api/messages/:sessionId', async (req, res) => {
 io.on('connection', (socket) => {
   console.log('New client connected:', socket.id);
 
-  // User joins with their session ID
   socket.on('join', async (sessionId) => {
     socket.join(sessionId);
     socket.sessionId = sessionId;
-    console.log(`User joined session: ${sessionId}`);
-
+    
     try {
       const result = await pool.query(
         'SELECT COUNT(*) FROM messages WHERE session_id = $1',
@@ -93,7 +110,6 @@ io.on('connection', (socket) => {
       
       if (messageCount === 0) {
         const greetingText = 'Hello, how can I help you?';
-        // Updated to handle the new column
         await pool.query(
           'INSERT INTO messages (session_id, sender_role, text, image_url) VALUES ($1, $2, $3, $4)',
           [sessionId, 'admin', greetingText, null]
@@ -107,40 +123,34 @@ io.on('connection', (socket) => {
         });
       }
     } catch (err) {
-      console.error('Error checking/creating session:', err);
+      console.error('Error checking session:', err);
     }
   });
 
-  // Admin joins (STILL HERE)
   socket.on('admin-join', () => {
     socket.isAdmin = true;
     socket.join('admin-room');
     console.log('Admin connected');
   });
 
-  // Admin selects a session (STILL HERE)
   socket.on('admin-select-session', (sessionId) => {
     if (socket.isAdmin) {
       socket.currentSession = sessionId;
       socket.join(sessionId);
-      console.log(`Admin joined session: ${sessionId}`);
     }
   });
 
-  // Handle new messages (UPDATED TO SUPPORT IMAGES)
+  // Handle new messages (Updated to include display_name and reply_to_text)
   socket.on('send-message', async (data) => {
-    const { sessionId, text, senderRole, imageData } = data;
+    const { sessionId, text, senderRole, imageData, displayName, replyToText } = data;
     
     try {
-      // Save to database
       const result = await pool.query(
-        'INSERT INTO messages (session_id, sender_role, text, image_url) VALUES ($1, $2, $3, $4) RETURNING *',
-        [sessionId, senderRole, text || '', imageData || null]
+        'INSERT INTO messages (session_id, sender_role, text, image_url, display_name, reply_to_text) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+        [sessionId, senderRole, text || '', imageData || null, displayName || null, replyToText || null]
       );
       
       const savedMessage = result.rows[0];
-      
-      // Broadcast live
       io.to(sessionId).emit('message', savedMessage);
       
       if (senderRole === 'user') {
@@ -149,7 +159,6 @@ io.on('connection', (socket) => {
           message: savedMessage
         });
       }
-      
     } catch (err) {
       console.error('Error saving message:', err);
       socket.emit('error', { message: 'Failed to send message' });
