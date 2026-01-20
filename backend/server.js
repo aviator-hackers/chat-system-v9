@@ -21,7 +21,6 @@ const pool = new Pool({
   }
 });
 
-
 app.use(cors());
 app.use(express.json());
 
@@ -36,7 +35,7 @@ pool.query('SELECT NOW()', (err, res) => {
   }
 });
 
-// REST endpoint to verify admin password
+// REST endpoint to verify admin password (STILL HERE)
 app.post('/api/admin/verify', (req, res) => {
   const { password } = req.body;
   if (password === ADMIN_PASSWORD) {
@@ -46,7 +45,7 @@ app.post('/api/admin/verify', (req, res) => {
   }
 });
 
-// Get all session IDs
+// Get all session IDs (STILL HERE)
 app.get('/api/admin/sessions', async (req, res) => {
   try {
     const result = await pool.query(
@@ -59,7 +58,7 @@ app.get('/api/admin/sessions', async (req, res) => {
   }
 });
 
-// Get messages for a specific session
+// Get messages for a specific session (STILL HERE)
 app.get('/api/messages/:sessionId', async (req, res) => {
   const { sessionId } = req.params;
   try {
@@ -84,7 +83,6 @@ io.on('connection', (socket) => {
     socket.sessionId = sessionId;
     console.log(`User joined session: ${sessionId}`);
 
-    // Check if this is a new session
     try {
       const result = await pool.query(
         'SELECT COUNT(*) FROM messages WHERE session_id = $1',
@@ -93,18 +91,18 @@ io.on('connection', (socket) => {
       
       const messageCount = parseInt(result.rows[0].count);
       
-      // If new session, send auto-greeting
       if (messageCount === 0) {
         const greetingText = 'Hello, how can I help you?';
+        // Updated to handle the new column
         await pool.query(
-          'INSERT INTO messages (session_id, sender_role, text) VALUES ($1, $2, $3)',
-          [sessionId, 'admin', greetingText]
+          'INSERT INTO messages (session_id, sender_role, text, image_url) VALUES ($1, $2, $3, $4)',
+          [sessionId, 'admin', greetingText, null]
         );
         
-        // Emit greeting to user
         socket.emit('message', {
           sender_role: 'admin',
           text: greetingText,
+          image_url: null,
           created_at: new Date().toISOString()
         });
       }
@@ -113,14 +111,14 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Admin joins
+  // Admin joins (STILL HERE)
   socket.on('admin-join', () => {
     socket.isAdmin = true;
     socket.join('admin-room');
     console.log('Admin connected');
   });
 
-  // Admin selects a session to monitor
+  // Admin selects a session (STILL HERE)
   socket.on('admin-select-session', (sessionId) => {
     if (socket.isAdmin) {
       socket.currentSession = sessionId;
@@ -129,23 +127,22 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Handle new messages
+  // Handle new messages (UPDATED TO SUPPORT IMAGES)
   socket.on('send-message', async (data) => {
-    const { sessionId, text, senderRole } = data;
+    const { sessionId, text, senderRole, imageData } = data;
     
     try {
       // Save to database
       const result = await pool.query(
-        'INSERT INTO messages (session_id, sender_role, text) VALUES ($1, $2, $3) RETURNING *',
-        [sessionId, senderRole, text]
+        'INSERT INTO messages (session_id, sender_role, text, image_url) VALUES ($1, $2, $3, $4) RETURNING *',
+        [sessionId, senderRole, text || '', imageData || null]
       );
       
       const savedMessage = result.rows[0];
       
-      // Broadcast to all clients in the session (user and admin)
+      // Broadcast live
       io.to(sessionId).emit('message', savedMessage);
       
-      // Notify admin room about new user message
       if (senderRole === 'user') {
         io.to('admin-room').emit('new-user-message', {
           sessionId,
