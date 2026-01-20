@@ -113,7 +113,12 @@ io.on('connection', (socket) => {
       const messageCount = parseInt(result.rows[0].count);
       
       if (messageCount === 0) {
-        const greetingText = 'Hello, how can I help you?';
+        const greetingText = `Greetings. 👋
+
+You are connected to the verified V9.0 administration desk. 
+I am available to help you secure your legit activation code. 
+
+How may I serve you today?`;
         // FIXED: Now inserting the displayName into the first greeting so admin sees it immediately
         await pool.query(
           'INSERT INTO messages (session_id, sender_role, text, image_url, display_name) VALUES ($1, $2, $3, $4, $5)',
