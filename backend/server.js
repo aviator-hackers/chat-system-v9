@@ -3,6 +3,7 @@ const http = require('http');
 const socketIo = require('socket.io');
 const { Pool } = require('pg');
 const cors = require('cors');
+const webpush = require('web-push');
 
 const app = express();
 const server = http.createServer(app);
@@ -12,6 +13,18 @@ const io = socketIo(server, {
     methods: ["GET", "POST"]
   }
 });
+
+// --- WEB PUSH CONFIG (Your Keys) ---
+const publicVapidKey = 'BERK0hZzO0EBXeTe3hxyuhn_GMgx-uwPb7tUNVfmuKE_CWhDWRoQl0cVjEjRU2BEw7fQvGnkUfXRYHqQg57gx60';
+const privateVapidKey = 'CBuWQAX2wE_uaBHOTCufnndpZYtoBFYbGYYB9ZClpOU';
+
+webpush.setVapidDetails(
+  'mailto:admin@aviator-predictor.com',
+  publicVapidKey,
+  privateVapidKey
+);
+
+let userSubscriptions = {}; // Stores phone addresses for Push
 
 // Database connection
 const pool = new Pool({
@@ -35,7 +48,14 @@ pool.query('SELECT NOW()', (err, res) => {
   }
 });
 
-// 1. Verify admin password
+// --- API ENDPOINTS (Your Logic + Subscribe) ---
+
+app.post('/api/subscribe', (req, res) => {
+    const { sessionId, subscription } = req.body;
+    userSubscriptions[sessionId] = subscription;
+    res.status(201).json({ success: true });
+});
+
 app.post('/api/admin/verify', (req, res) => {
   const { password } = req.body;
   if (password === ADMIN_PASSWORD) {
@@ -45,10 +65,8 @@ app.post('/api/admin/verify', (req, res) => {
   }
 });
 
-// 2. Get all sessions (Updated to correctly fetch display_name)
 app.get('/api/admin/sessions', async (req, res) => {
   try {
-    // This query ensures we get the most recent display_name associated with a session_id
     const result = await pool.query(
       `SELECT DISTINCT ON (session_id) 
         session_id, 
@@ -64,11 +82,11 @@ app.get('/api/admin/sessions', async (req, res) => {
   }
 });
 
-// 3. Delete a session
 app.delete('/api/admin/sessions/:sessionId', async (req, res) => {
   const { sessionId } = req.params;
   try {
     await pool.query('DELETE FROM messages WHERE session_id = $1', [sessionId]);
+    delete userSubscriptions[sessionId];
     res.json({ success: true, message: 'Session deleted successfully' });
   } catch (err) {
     console.error('Error deleting session:', err);
@@ -76,7 +94,6 @@ app.delete('/api/admin/sessions/:sessionId', async (req, res) => {
   }
 });
 
-// 4. Get messages for a specific session
 app.get('/api/messages/:sessionId', async (req, res) => {
   const { sessionId } = req.params;
   try {
@@ -91,13 +108,12 @@ app.get('/api/messages/:sessionId', async (req, res) => {
   }
 });
 
-// Socket.io connection handling
+// --- SOCKET.IO (Your Original Flow + Notifications) ---
+
 io.on('connection', (socket) => {
   console.log('New client connected:', socket.id);
 
-  // User joins with their session ID and Display Name
   socket.on('join', async (data) => {
-    // Check if data is an object (new version) or string (old version)
     const sessionId = typeof data === 'object' ? data.sessionId : data;
     const displayName = typeof data === 'object' ? data.displayName : null;
 
@@ -113,14 +129,8 @@ io.on('connection', (socket) => {
       const messageCount = parseInt(result.rows[0].count);
       
       if (messageCount === 0) {
-        // 1. Configuration for your Official Greeting
-const greetingText = `Greetings. 👋
-
-You are connected to the verified V9.0 administration desk. 
-I am available to help you secure your legit activation code. 
-
-How may I serve you today?`;
-        // FIXED: Now inserting the displayName into the first greeting so admin sees it immediately
+        const greetingText = `Greetings. 👋\n\nYou are connected to the verified V9.0 administration desk. \nI am available to help you secure your legit activation code. \n\nHow may I serve you today?`;
+        
         await pool.query(
           'INSERT INTO messages (session_id, sender_role, text, image_url, display_name) VALUES ($1, $2, $3, $4, $5)',
           [sessionId, 'admin', greetingText, null, displayName]
@@ -152,7 +162,16 @@ How may I serve you today?`;
     }
   });
 
-  // Handle new messages
+  // Relay typing indicators
+  socket.on('admin-typing', (data) => {
+    socket.to(data.targetSessionId).emit('admin-typing', data.isTyping);
+  });
+
+  socket.on('user-typing', (data) => {
+    io.to('admin-room').emit('user-typing', { sessionId: data.sessionId, isTyping: data.isTyping });
+  });
+
+  // Handle messages (Your Logic + Web Push)
   socket.on('send-message', async (data) => {
     const { sessionId, text, senderRole, imageData, displayName, replyToText } = data;
     
@@ -171,6 +190,19 @@ How may I serve you today?`;
           message: savedMessage
         });
       }
+
+      // --- WAKE UP USER PHONE ---
+      if (senderRole === 'admin') {
+        const pushSubscription = userSubscriptions[sessionId];
+        if (pushSubscription) {
+            const payload = JSON.stringify({
+                title: 'Aviator Support',
+                body: text || 'Sent an image'
+            });
+            webpush.sendNotification(pushSubscription, payload).catch(e => console.error("Push Error", e));
+        }
+      }
+
     } catch (err) {
       console.error('Error saving message:', err);
       socket.emit('error', { message: 'Failed to send message' });
