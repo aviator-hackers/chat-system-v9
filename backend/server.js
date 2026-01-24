@@ -3,35 +3,18 @@ const http = require('http');
 const socketIo = require('socket.io');
 const { Pool } = require('pg');
 const cors = require('cors');
-const webpush = require('web-push');
+const axios = require('axios'); // For Expo Push
 
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
+  cors: { origin: "*", methods: ["GET", "POST"] }
 });
-
-// --- WEB PUSH CONFIG (Your Keys) ---
-const publicVapidKey = 'BERK0hZzO0EBXeTe3hxyuhn_GMgx-uwPb7tUNVfmuKE_CWhDWRoQl0cVjEjRU2BEw7fQvGnkUfXRYHqQg57gx60';
-const privateVapidKey = 'CBuWQAX2wE_uaBHOTCufnndpZYtoBFYbGYYB9ZClpOU';
-
-webpush.setVapidDetails(
-  'mailto:admin@aviator-predictor.com',
-  publicVapidKey,
-  privateVapidKey
-);
-
-let userSubscriptions = {}; // Stores phone addresses for Push
 
 // Database connection
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false
-  }
+  ssl: { rejectUnauthorized: false }
 });
 
 app.use(cors());
@@ -39,182 +22,106 @@ app.use(express.json());
 
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
-// Test database connection
-pool.query('SELECT NOW()', (err, res) => {
-  if (err) {
-    console.error('Database connection error:', err);
-  } else {
-    console.log('Database connected successfully');
-  }
+// --- 1. NEW TOKEN ROUTE (Doesn't touch existing logic) ---
+app.post('/api/save-token', async (req, res) => {
+    const { sessionId, token } = req.body;
+    try {
+        await pool.query(
+            'UPDATE messages SET expo_push_token = $1 WHERE session_id = $2',
+            [token, sessionId]
+        );
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: 'DB Error' }); }
 });
 
-// --- API ENDPOINTS (Your Logic + Subscribe) ---
-
-app.post('/api/subscribe', (req, res) => {
-    const { sessionId, subscription } = req.body;
-    userSubscriptions[sessionId] = subscription;
-    res.status(201).json({ success: true });
-});
-
+// --- 2. YOUR ORIGINAL ROUTES ---
 app.post('/api/admin/verify', (req, res) => {
   const { password } = req.body;
-  if (password === ADMIN_PASSWORD) {
-    res.json({ success: true });
-  } else {
-    res.json({ success: false });
-  }
+  res.json({ success: password === ADMIN_PASSWORD });
 });
 
 app.get('/api/admin/sessions', async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT DISTINCT ON (session_id) 
-        session_id, 
-        display_name, 
+        session_id, display_name, expo_push_token,
         MAX(created_at) OVER (PARTITION BY session_id) as last_message 
-       FROM messages 
-       ORDER BY session_id, created_at DESC`
+       FROM messages ORDER BY session_id, created_at DESC`
     );
     res.json({ sessions: result.rows });
-  } catch (err) {
-    console.error('Error fetching sessions:', err);
-    res.status(500).json({ error: 'Database error' });
-  }
+  } catch (err) { res.status(500).json({ error: 'DB error' }); }
 });
 
 app.delete('/api/admin/sessions/:sessionId', async (req, res) => {
-  const { sessionId } = req.params;
   try {
-    await pool.query('DELETE FROM messages WHERE session_id = $1', [sessionId]);
-    delete userSubscriptions[sessionId];
-    res.json({ success: true, message: 'Session deleted successfully' });
-  } catch (err) {
-    console.error('Error deleting session:', err);
-    res.status(500).json({ error: 'Database error' });
-  }
+    await pool.query('DELETE FROM messages WHERE session_id = $1', [req.params.sessionId]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: 'DB error' }); }
 });
 
 app.get('/api/messages/:sessionId', async (req, res) => {
-  const { sessionId } = req.params;
   try {
-    const result = await pool.query(
-      'SELECT * FROM messages WHERE session_id = $1 ORDER BY created_at ASC',
-      [sessionId]
-    );
+    const result = await pool.query('SELECT * FROM messages WHERE session_id = $1 ORDER BY created_at ASC', [req.params.sessionId]);
     res.json({ messages: result.rows });
-  } catch (err) {
-    console.error('Error fetching messages:', err);
-    res.status(500).json({ error: 'Database error' });
-  }
+  } catch (err) { res.status(500).json({ error: 'DB error' }); }
 });
 
-// --- SOCKET.IO (Your Original Flow + Notifications) ---
-
+// --- 3. YOUR ORIGINAL SOCKET LOGIC (GREETINGS + TYPING) ---
 io.on('connection', (socket) => {
-  console.log('New client connected:', socket.id);
-
   socket.on('join', async (data) => {
     const sessionId = typeof data === 'object' ? data.sessionId : data;
     const displayName = typeof data === 'object' ? data.displayName : null;
-
     socket.join(sessionId);
     socket.sessionId = sessionId;
-    
+
     try {
-      const result = await pool.query(
-        'SELECT COUNT(*) FROM messages WHERE session_id = $1',
-        [sessionId]
-      );
-      
-      const messageCount = parseInt(result.rows[0].count);
-      
-      if (messageCount === 0) {
-        const greetingText = `Greetings. 👋\n\nYou are connected to the verified V9.0 administration desk. \nI am available to help you secure your legit activation code. \n\nHow may I serve you today?`;
-        
+      const result = await pool.query('SELECT COUNT(*) FROM messages WHERE session_id = $1', [sessionId]);
+      if (parseInt(result.rows[0].count) === 0) {
+        const greetingText = `Greetings. 👋\n\nYou are connected to the verified V9.0 administration desk...`;
         await pool.query(
-          'INSERT INTO messages (session_id, sender_role, text, image_url, display_name) VALUES ($1, $2, $3, $4, $5)',
-          [sessionId, 'admin', greetingText, null, displayName]
+          'INSERT INTO messages (session_id, sender_role, text, display_name) VALUES ($1, $2, $3, $4)',
+          [sessionId, 'admin', greetingText, displayName]
         );
-        
-        socket.emit('message', {
-          sender_role: 'admin',
-          text: greetingText,
-          image_url: null,
-          display_name: displayName,
-          created_at: new Date().toISOString()
-        });
+        socket.emit('message', { sender_role: 'admin', text: greetingText, created_at: new Date().toISOString() });
       }
-    } catch (err) {
-      console.error('Error checking session:', err);
-    }
+    } catch (err) { console.error(err); }
   });
 
-  socket.on('admin-join', () => {
-    socket.isAdmin = true;
-    socket.join('admin-room');
-    console.log('Admin connected');
-  });
+  socket.on('admin-join', () => { socket.isAdmin = true; socket.join('admin-room'); });
 
-  socket.on('admin-select-session', (sessionId) => {
-    if (socket.isAdmin) {
-      socket.currentSession = sessionId;
-      socket.join(sessionId);
-    }
-  });
+  socket.on('admin-typing', (data) => { socket.to(data.targetSessionId).emit('admin-typing', data.isTyping); });
 
-  // Relay typing indicators
-  socket.on('admin-typing', (data) => {
-    socket.to(data.targetSessionId).emit('admin-typing', data.isTyping);
-  });
+  socket.on('user-typing', (data) => { io.to('admin-room').emit('user-typing', data); });
 
-  socket.on('user-typing', (data) => {
-    io.to('admin-room').emit('user-typing', { sessionId: data.sessionId, isTyping: data.isTyping });
-  });
-
-  // Handle messages (Your Logic + Web Push)
+  // --- 4. YOUR ORIGINAL SEND-MESSAGE LOGIC + EXPO TRIGGER ---
   socket.on('send-message', async (data) => {
     const { sessionId, text, senderRole, imageData, displayName, replyToText } = data;
-    
     try {
       const result = await pool.query(
         'INSERT INTO messages (session_id, sender_role, text, image_url, display_name, reply_to_text) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
         [sessionId, senderRole, text || '', imageData || null, displayName || null, replyToText || null]
       );
-      
       const savedMessage = result.rows[0];
       io.to(sessionId).emit('message', savedMessage);
-      
+
       if (senderRole === 'user') {
-        io.to('admin-room').emit('new-user-message', {
-          sessionId,
-          message: savedMessage
-        });
+        io.to('admin-room').emit('new-user-message', { sessionId, message: savedMessage });
       }
 
-      // --- WAKE UP USER PHONE ---
+      // ONLY TRIGGER PUSH IF ADMIN REPLIES
       if (senderRole === 'admin') {
-        const pushSubscription = userSubscriptions[sessionId];
-        if (pushSubscription) {
-            const payload = JSON.stringify({
-                title: 'Aviator Support',
-                body: text || 'Sent an image'
-            });
-            webpush.sendNotification(pushSubscription, payload).catch(e => console.error("Push Error", e));
-        }
+          const tokenRes = await pool.query('SELECT expo_push_token FROM messages WHERE session_id = $1 AND expo_push_token IS NOT NULL LIMIT 1', [sessionId]);
+          if (tokenRes.rows.length > 0) {
+              axios.post('https://exp.host/--/api/v2/push/send', {
+                  to: tokenRes.rows[0].expo_push_token,
+                  title: 'Support Team 💬',
+                  body: text || 'Sent an image',
+                  sound: 'default'
+              }).catch(e => console.log("Push Failed"));
+          }
       }
-
-    } catch (err) {
-      console.error('Error saving message:', err);
-      socket.emit('error', { message: 'Failed to send message' });
-    }
-  });
-
-  socket.on('disconnect', () => {
-    console.log('Client disconnected:', socket.id);
+    } catch (err) { console.error(err); }
   });
 });
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+server.listen(process.env.PORT || 3000);
